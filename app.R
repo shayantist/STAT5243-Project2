@@ -12,6 +12,10 @@ library(readxl)
 library(jsonlite)
 library(shinydashboard)
 library(corrplot)
+library(tm)
+library(hunspell)
+# Set maximum upload size to 10 GB
+options(shiny.maxRequestSize = 10 * 1024^3)
 
 # Load built-in datasets
 data(iris)
@@ -79,14 +83,14 @@ ui <- dashboardPage(
         #     status = "info",
         #     solidHeader = TRUE,
         #     collapsible = TRUE,
-            
+        
         #     h4("Loading Data"),
         #     p("In the 'Load Data' tab, you can:"),
         #     tags$ul(
         #       tags$li("Upload your own data (csv file) OR select from built-in datasets to explore the app's functionality"),
         #       tags$li("Preview your data before proceeding to analysis")
         #     ),
-            
+        
         #     h4("Data Cleaning"),
         #     p("In the 'Data Cleaning' tab, you can:"),
         #     tags$ul(
@@ -96,7 +100,7 @@ ui <- dashboardPage(
         #       tags$li("Normalize or standardize numerical variables"),
         #       tags$li("Handle outliers through removal or transformation")
         #     ),
-            
+        
         #     h4("Feature Engineering"),
         #     p("In the 'Feature Engineering' tab, you can:"),
         #     tags$ul(
@@ -104,7 +108,7 @@ ui <- dashboardPage(
         #       tags$li("Apply transformations to improve variable distributions"),
         #       tags$li("Create bins from continuous variables")
         #     ),
-            
+        
         #     h4("Exploratory Analysis"),
         #     p("In the 'Exploratory Analysis' tab, you can:"),
         #     tags$ul(
@@ -140,7 +144,7 @@ ui <- dashboardPage(
               fileInput("file", "Choose File to Upload (.csv, .xlsx, .xls, .json, .rds):", accept = c(".csv", ".xlsx", ".xls", ".json", ".rds")),
               checkboxInput("header", "File has header", TRUE)
             ),
-    
+            
             conditionalPanel(
               condition = "input.dataSource == 'builtin'",
               selectInput("builtinDataset", "Select Dataset:", choices = names(builtin_datasets))
@@ -149,7 +153,7 @@ ui <- dashboardPage(
             actionButton("loadData", "Load Data")
           )
         ),
-
+        
         conditionalPanel(
           condition = "output.dataLoaded",
           fluidRow(
@@ -159,7 +163,7 @@ ui <- dashboardPage(
               status = "primary",
               solidHeader = TRUE, 
               collapsible = TRUE,
-
+              
               DTOutput("dataPreview")
             )
           )
@@ -184,7 +188,13 @@ ui <- dashboardPage(
             selectInput("missingMethod", "Treatment Method:",
                         choices = list(
                           "Remove rows with missing values" = "remove",
-                          "Fill with constant value" = "constant"
+                          "Fill with constant value" = "constant",
+                          "Fill with Mean" = "mean",
+                          "Fill with Median" = "median",
+                          "Fill with Mode" = "mode",
+                          "Linear Interpolation" = "linear_interpolation",
+                          "Spline Interpolation" = "spline_interpolation",
+                          "Nearest Neighbor Interpolation" = "nearest_neighbor"
                         ),
                         selected = "remove"
             ),
@@ -197,7 +207,7 @@ ui <- dashboardPage(
         ),
         fluidRow(
           box(
-            width = 6,
+            width = 12,
             title = "Duplicate Handling",
             status = "primary",
             solidHeader = TRUE,
@@ -206,8 +216,26 @@ ui <- dashboardPage(
             verbatimTextOutput("duplicateSummary"),
             
             selectInput("duplicateColumns", "Check Duplicates Based On Column(s):", choices = NULL, multiple = TRUE),
-            checkboxInput("keepFirst", "Keep First Occurrence", TRUE),
-            actionButton("removeDuplicates", "Remove Duplicates")
+            checkboxInput("keepFirst", "Keep First Occurrence", FALSE),
+            checkboxInput("keepLast", "Keep Last Occurrence", FALSE),
+            actionButton("removeDuplicates", "Remove Duplicates"),
+            tags$script(HTML("
+    $(document).ready(function() {
+      // When keepFirst is checked
+      $('#keepFirst').change(function() {
+        if ($(this).is(':checked')) {
+          $('#keepLast').prop('checked', false); // Uncheck keepLast
+        }
+      });
+      
+      // When keepLast is checked
+      $('#keepLast').change(function() {
+        if ($(this).is(':checked')) {
+          $('#keepFirst').prop('checked', false); // Uncheck keepFirst
+        }
+      });
+    });
+  "))
           ),
           
           box(
@@ -231,6 +259,26 @@ ui <- dashboardPage(
               numericInput("outlierThreshold", "Outlier Threshold (z-score):", 3, min = 1, max = 10)
             ),
             actionButton("applyTransform", "Apply Transformation")
+          ),
+          
+          box(
+            width = 6,
+            title = "Text Data Preprocessing (NLP)",
+            status = "primary",
+            solidHeader = TRUE,
+            collapsible = TRUE,
+            
+            selectInput("textColumn", "Select Text Column:", choices = NULL),
+            checkboxGroupInput("textPreprocessOptions", "Preprocessing Options:",
+                               choices = list(
+                                 "Tokenization" = "tokenize",
+                                 "Remove Stopwords" = "remove_stopwords",
+                                 "Convert to Lowercase" = "lowercase",
+                                 "Remove Punctuation" = "remove_punctuation",
+                                 "Correct Spelling Errors (May Take a Long Time)" = "correct_spelling"
+                               )
+            ),
+            actionButton("applyTextPreprocess", "Apply Text Preprocessing")
           )
         ),
         
@@ -243,7 +291,7 @@ ui <- dashboardPage(
               status = "primary",
               solidHeader = TRUE,
               collapsible = TRUE,
-
+              
               DTOutput("cleanedDataPreview")
             )
           )
@@ -265,7 +313,8 @@ ui <- dashboardPage(
                         choices = list(
                           "Mathematical Operation" = "math",
                           "Binning" = "bin",
-                          "Date Processing" = "date"
+                          "Date Processing" = "date",
+                          "Aggregate Metrics" = "aggregate"
                         )
             ),
             
@@ -304,6 +353,20 @@ ui <- dashboardPage(
                           )
               ),
               textInput("dateFeatureName", "New Feature Name:", "date_feature")
+            ),
+            conditionalPanel(
+              condition = "input.featureType == 'aggregate'",
+              selectInput("groupColumn", "Group By Column:", choices = NULL),
+              selectInput("aggMethod", "Aggregation Method:",
+                          choices = list(
+                            "Mean" = "mean",
+                            "Median" = "median",
+                            "Mode" = "mode",
+                            "Sum" = "sum",
+                            "Standard Deviation" = "sd"
+                          )),
+              selectInput("aggColumns", "Columns to Aggregate:", choices = NULL, multiple = TRUE),
+              textInput("aggSuffix", "New Feature Suffix:", "_agg")
             ),
             
             actionButton("createFeature", "Create Feature")
@@ -372,76 +435,76 @@ ui <- dashboardPage(
             tabBox(
               width = 12,
               tabPanel(
-              "Univariate Analysis",
-              fluidRow(
-                column(
-                  width = 3,
-                  selectInput("univarPlotType", "Plot Type:", 
-                              choices = list(
-                                "Histogram" = "histogram",
-                                "Box Plot" = "boxplot",
-                                "Density Plot" = "density",
-                                "Bar Chart" = "bar"
-                              )
+                "Univariate Analysis",
+                fluidRow(
+                  column(
+                    width = 3,
+                    selectInput("univarPlotType", "Plot Type:", 
+                                choices = list(
+                                  "Histogram" = "histogram",
+                                  "Box Plot" = "boxplot",
+                                  "Density Plot" = "density",
+                                  "Bar Chart" = "bar"
+                                )
+                    ),
+                    selectInput("univarColumn", "Select Column:", choices = NULL),
+                    actionButton("generateUnivar", "Generate Plot")
                   ),
-                  selectInput("univarColumn", "Select Column:", choices = NULL),
-                  actionButton("generateUnivar", "Generate Plot")
-                ),
-                column(
-                  width = 9,
-                  plotlyOutput("univarPlot", height = "500px")
+                  column(
+                    width = 9,
+                    plotlyOutput("univarPlot", height = "500px")
+                  )
+                )
+              ),
+              tabPanel(
+                "Bivariate Analysis",
+                fluidRow(
+                  column(
+                    width = 3,
+                    selectInput("bivarPlotType", "Plot Type:", 
+                                choices = list(
+                                  "Scatter Plot" = "scatter",
+                                  "Line Chart" = "line",
+                                  "Box Plot" = "boxplot",
+                                  "Bar Chart" = "bar",
+                                  "Heatmap" = "heatmap"
+                                )
+                    ),
+                    selectInput("bivarXColumn", "X Column:", choices = NULL),
+                    selectInput("bivarYColumn", "Y Column:", choices = NULL),
+                    conditionalPanel(
+                      condition = "input.bivarPlotType == 'scatter'",
+                      selectInput("bivarColorBy", "Color By:", choices = NULL, selected = NULL)
+                    ),
+                    actionButton("generateBivar", "Generate Plot")
+                  ),
+                  column(
+                    width = 9,
+                    plotlyOutput("bivarPlot", height = "500px")
+                  )
+                )
+              ),
+              tabPanel(
+                "Correlation Analysis",
+                fluidRow(
+                  column(
+                    width = 3,
+                    selectInput("corrColumns", "Select Columns:", choices = NULL, multiple = TRUE),
+                    selectInput("corrMethod", "Correlation Method:", 
+                                choices = list(
+                                  "Pearson" = "pearson",
+                                  "Spearman" = "spearman",
+                                  "Kendall" = "kendall"
+                                )
+                    ),
+                    actionButton("generateCorr", "Generate Correlation")
+                  ),
+                  column(
+                    width = 9,
+                    plotOutput("corrPlot", height = "500px")
+                  )
                 )
               )
-            ),
-            tabPanel(
-              "Bivariate Analysis",
-              fluidRow(
-                column(
-                  width = 3,
-                  selectInput("bivarPlotType", "Plot Type:", 
-                              choices = list(
-                                "Scatter Plot" = "scatter",
-                                "Line Chart" = "line",
-                                "Box Plot" = "boxplot",
-                                "Bar Chart" = "bar",
-                                "Heatmap" = "heatmap"
-                              )
-                  ),
-                  selectInput("bivarXColumn", "X Column:", choices = NULL),
-                  selectInput("bivarYColumn", "Y Column:", choices = NULL),
-                  conditionalPanel(
-                    condition = "input.bivarPlotType == 'scatter'",
-                    selectInput("bivarColorBy", "Color By:", choices = NULL, selected = NULL)
-                  ),
-                  actionButton("generateBivar", "Generate Plot")
-                ),
-                column(
-                  width = 9,
-                  plotlyOutput("bivarPlot", height = "500px")
-                )
-              )
-            ),
-            tabPanel(
-              "Correlation Analysis",
-              fluidRow(
-                column(
-                  width = 3,
-                  selectInput("corrColumns", "Select Columns:", choices = NULL, multiple = TRUE),
-                  selectInput("corrMethod", "Correlation Method:", 
-                              choices = list(
-                                "Pearson" = "pearson",
-                                "Spearman" = "spearman",
-                                "Kendall" = "kendall"
-                              )
-                  ),
-                  actionButton("generateCorr", "Generate Correlation")
-                ),
-                column(
-                  width = 9,
-                  plotOutput("corrPlot", height = "500px")
-                )
-              )
-            )
             )
           )
         ),
@@ -523,12 +586,12 @@ server <- function(input, output, session) {
         values$rawData <- cbind(State = rownames(values$rawData), values$rawData)
         rownames(values$rawData) <- NULL
       }
-
+      
       # Set all data to the raw data (for now)
       values$cleanedData <- values$rawData
       values$engineeredData <- values$rawData
       values$currentData <- values$rawData
-
+      
       # Determine column types
       values$columnTypes <- sapply(values$rawData, class)
       
@@ -541,7 +604,8 @@ server <- function(input, output, session) {
         "univarColumn", 
         "bivarXColumn", "bivarYColumn", "bivarColorBy", 
         "corrColumns", "filterColumn", 
-        "impactFeature", "dateColumn"
+        "dateColumn",
+        "textColumn","groupColumn", "aggColumns"
       )
       for (component in components) {
         updateSelectInput(session, component, choices = names(values$rawData))
@@ -601,6 +665,52 @@ server <- function(input, output, session) {
           tempData[[col]][is.na(tempData[[col]])] <- input$constantValue
         }
       }
+      else if (input$missingMethod == "mean") {
+        # Mean imputation for numeric columns
+        if (is.numeric(tempData[[col]])) {
+          mean_val <- mean(tempData[[col]], na.rm = TRUE)
+          tempData[[col]][is.na(tempData[[col]])] <- mean_val
+        }
+        
+      } else if (input$missingMethod == "median") {
+        # Median imputation for numeric columns
+        if (is.numeric(tempData[[col]])) {
+          median_val <- median(tempData[[col]], na.rm = TRUE)
+          tempData[[col]][is.na(tempData[[col]])] <- median_val
+        }
+        
+      } else if (input$missingMethod == "mode") {
+        # Mode imputation (works for all data types)
+        mode_val <- function(x) {
+          ux <- unique(x)
+          ux[which.max(tabulate(match(x, ux)))]
+        }
+        mode_val <- mode_val(tempData[[col]][!is.na(tempData[[col]])])
+        tempData[[col]][is.na(tempData[[col]])] <- mode_val
+        
+      } else if (input$missingMethod == "interpolation") {
+        # linear_interpolation（for numeric columns）
+        if (is.numeric(tempData[[col]])) {
+          tempData[[col]] <- zoo::na.approx(tempData[[col]], na.rm = FALSE)
+        } else {
+          showNotification(paste("Column", col, "is non-numeric, cannot use linear interpolation"), type = "warning")
+        }
+        
+      } else if (input$missingMethod == "spline_interpolation") {
+        # spline_interpolation（for numeric columns）
+        if (is.numeric(tempData[[col]])) {
+          tempData[[col]] <- zoo::na.spline(tempData[[col]], na.rm = FALSE)
+        } else {
+          showNotification(paste("Column", col, "is non-numeric, cannot use spline interpolation"), type = "warning")
+        }
+        
+      } else if (input$missingMethod == "nearest_neighbor") {
+        # Nearest Neighbor Interpolation（for numeric columns）
+        if (is.numeric(tempData[[col]])) {
+          tempData[[col]] <- zoo::na.locf(tempData[[col]], na.rm = FALSE)
+        } else {
+          showNotification(paste("Column", col, "is non-numeric, cannot use nearest neighbor interpolation"), type = "warning")
+        } }
     }
     
     values$cleanedData <- tempData
@@ -629,8 +739,11 @@ server <- function(input, output, session) {
     req(values$cleanedData, input$duplicateColumns)
     
     if (length(input$duplicateColumns) > 0) {
+      values$cleanedData$is_duplicate <- duplicated(values$cleanedData[input$duplicateColumns]) # Marking Duplicate Values
       if (input$keepFirst) { # keep first occurrence of duplicates
         values$cleanedData <- values$cleanedData[!duplicated(values$cleanedData[input$duplicateColumns]), ]
+      } else if (input$keepLast) { # keep last occurrence of duplicates
+        values$cleanedData <- values$cleanedData[!duplicated(values$cleanedData[input$duplicateColumns], fromLast = TRUE), ]
       } else { # remove all occurrences of duplicates
         dups <- duplicated(values$cleanedData[input$duplicateColumns]) | 
           duplicated(values$cleanedData[input$duplicateColumns], fromLast = TRUE)
@@ -644,6 +757,71 @@ server <- function(input, output, session) {
     } else {
       showNotification("Please select columns to check for duplicates", type = "warning")
     }
+  })
+  
+  # Text data preprocessing
+  observeEvent(input$applyTextPreprocess, {
+    req(values$cleanedData, input$textColumn)
+    
+    # Check if the selected column is text
+    if (!is.character(values$cleanedData[[input$textColumn]])) {
+      showNotification("Selected column is not text data", type = "warning")
+      return()
+    }
+    
+    # Apply selected preprocessing steps
+    tempData <- values$cleanedData
+    text_data <- tempData[[input$textColumn]]
+    
+    if ("tokenize" %in% input$textPreprocessOptions) {
+      # Tokenization: Split text into words
+      text_data <- sapply(text_data, function(x) paste(strsplit(x, "\\s+")[[1]], collapse = " "))
+    }
+    
+    if ("remove_stopwords" %in% input$textPreprocessOptions) {
+      # Remove stopwords
+      text_data <- removeWords(text_data, stopwords("en"))
+    }
+    
+    if ("lowercase" %in% input$textPreprocessOptions) {
+      # Convert to lowercase
+      text_data <- tolower(text_data)
+    }
+    
+    if ("remove_punctuation" %in% input$textPreprocessOptions) {
+      # Remove punctuation and special characters
+      text_data <- removePunctuation(text_data)
+    }
+    
+    if ("correct_spelling" %in% input$textPreprocessOptions) {
+      # Correct spelling errors
+      text_data <- sapply(text_data, function(x) {
+        words <- strsplit(x, "\\s+")[[1]]
+        corrected_words <- sapply(words, function(word) {
+          if (hunspell_check(word)) {
+            return(word)
+          } else {
+            suggestions <- hunspell_suggest(word)
+            if (length(suggestions) > 0) {
+              return(suggestions[[1]])
+            } else {
+              return(word)
+            }
+          }
+        })
+        paste(corrected_words, collapse = " ")
+      })
+    }
+    
+    # Update the text column with processed data
+    tempData[[input$textColumn]] <- text_data
+    
+    # Update reactive values
+    values$cleanedData <- tempData
+    values$currentData <- tempData
+    values$engineeredData <- tempData
+    
+    showNotification("Text preprocessing applied successfully!", type = "message")
   })
   
   # Apply transformations
@@ -715,7 +893,7 @@ server <- function(input, output, session) {
     # Make a copy of the current data
     tempData <- values$engineeredData
     
-    if (input$featureType == "math") { # create new feature by performing mathematical operation on two existing features
+    {if (input$featureType == "math") { # create new feature by performing mathematical operation on two existing features
       req(input$mathCol1, input$mathOperation, input$mathCol2)
       
       # Check if both columns are numeric
@@ -756,21 +934,21 @@ server <- function(input, output, session) {
       if (input$binEqual) {
         # Equal width bins
         breaks <- seq(min(tempData[[input$binColumn]], na.rm = TRUE),
-                     max(tempData[[input$binColumn]], na.rm = TRUE),
-                     length.out = input$binCount + 1)
+                      max(tempData[[input$binColumn]], na.rm = TRUE),
+                      length.out = input$binCount + 1)
         tempData[[input$binFeatureName]] <- cut(tempData[[input$binColumn]], 
-                                              breaks = breaks,
-                                              include.lowest = TRUE,
-                                              dig.lab = 3)
+                                                breaks = breaks,
+                                                include.lowest = TRUE,
+                                                dig.lab = 3)
       } else {
         # Equal frequency bins (quantiles)
         breaks <- quantile(tempData[[input$binColumn]], 
-                         probs = seq(0, 1, length.out = input$binCount + 1), 
-                         na.rm = TRUE)
+                           probs = seq(0, 1, length.out = input$binCount + 1), 
+                           na.rm = TRUE)
         tempData[[input$binFeatureName]] <- cut(tempData[[input$binColumn]], 
-                                              breaks = breaks,
-                                              include.lowest = TRUE,
-                                              dig.lab = 3)
+                                                breaks = breaks,
+                                                include.lowest = TRUE,
+                                                dig.lab = 3)
       }
       
       showNotification(paste("Created binned feature:", input$binFeatureName), type = "message")
@@ -809,7 +987,55 @@ server <- function(input, output, session) {
     
     values$engineeredData <- tempData
     values$currentData <- tempData
-    
+    }
+    # aggreate matrix
+    if (input$featureType == "aggregate") {
+      req(input$groupColumn, input$aggColumns, input$aggMethod)
+      if (input$groupColumn %in% input$aggColumns) {
+        showNotification("Error：Columns to 'Aggregate' can not contain 'Group By Column'！", type = "error")
+        return()
+      }
+      tempData <- values$engineeredData
+      
+      if(!input$groupColumn %in% names(tempData)) {
+        showNotification("Group column not found", type = "error")
+        return()
+      }
+      tempData <- values$engineeredData
+      
+      # Validate columns
+      if(!input$groupColumn %in% names(tempData)) {
+        showNotification("Group column not found", type = "error")
+        return()
+      }
+      agg_suffix <- input$aggSuffix
+      # Create aggregation function
+      agg_func <- switch(input$aggMethod,
+                         "mean" = function(x) mean(x, na.rm = TRUE),
+                         "median" = function(x) median(x, na.rm = TRUE),
+                         "mode" = function(x) {
+                           ux <- unique(x)
+                           ux[which.max(tabulate(match(x, ux)))]
+                         },
+                         "sum" = function(x) sum(x, na.rm = TRUE),
+                         "sd" = function(x) sd(x, na.rm = TRUE))
+      
+      # Calculate aggregated values
+      aggregated <- tempData %>%
+        group_by(!!sym(input$groupColumn)) %>%
+        mutate(across(all_of(input$aggColumns), 
+                      list(agg = agg_func), 
+                      .names = "{.col}{input$aggSuffix}")) %>%
+        ungroup()
+      
+      # Update data
+      tempData <- aggregated
+      values$engineeredData <- aggregated
+      values$currentData <- aggregated
+      
+      showNotification(paste("Created aggregate features using", input$aggMethod), 
+                       type = "message")
+    }
     # Update column lists
     components <- c("univarColumn", "bivarXColumn", "bivarYColumn", "bivarColorBy", "corrColumns", "filterColumn", "impactFeature")
     for (component in components) {
@@ -1136,4 +1362,3 @@ server <- function(input, output, session) {
 
 # Run the application
 shinyApp(ui = ui, server = server)
-

@@ -84,8 +84,7 @@ install.packages(c(
 ```
 ├── app.R             # Main application file with UI and server logic
 ├── README.md         # This documentation file
-├── Project 2 Writeup.pdf     # Writeup for Project 2 by our team
-└── Project 2.pdf     # Original Project 2 PDF report by Prof. Pijyan
+└── Project 2 Report.pdf     # Report for Project 2 by our team
 ```
 
 ## Usage Guide

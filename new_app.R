@@ -59,6 +59,36 @@ ui <- dashboardPage(
         }
       "))
     ),
+
+    tags$script(HTML("
+  window.dataLayer = window.dataLayer || [];
+  function gtag(){dataLayer.push(arguments);}
+
+  gtag('js', new Date());
+
+  // Add experiment_group to all events
+  const urlParams = new URLSearchParams(window.location.search);
+  const group = urlParams.get('group') || 'A';
+
+  gtag('config', 'G-KYT4H1X2E5', {
+    'experiment_group': group
+  });
+
+  gtag('event', 'group_assigned', {
+    'experiment_group': group
+  });
+")),
+    tags$script(src = "https://www.googletagmanager.com/gtag/js?id=G-KYT4H1X2E5", async = NA),
+    
+    
+    tags$script(HTML("
+  let params = new URLSearchParams(window.location.search);
+  if (!params.has('group')) {
+    let randGroup = Math.random() < 0.5 ? 'A' : 'B';
+    window.location.search = '?group=' + randGroup;
+  }
+")),
+    
     tabItems(
       # User Instructions Tab
       tabItem(
@@ -122,7 +152,7 @@ ui <- dashboardPage(
         #   )
         # )
       ),
-      
+
       # Data Loading Tab
       tabItem(
         tabName = "load",
@@ -539,10 +569,31 @@ ui <- dashboardPage(
 
 # Server
 server <- function(input, output, session) {
+  # Determine user group based on URL parameter (?group=A or ?group=B)
+  group <- reactive({
+    query <- parseQueryString(session$clientData$url_search)
+    grp <- query[["group"]]
+    if (is.null(grp) || !(grp %in% c("A", "B"))) {
+      return("A")
+    } else {
+      return(grp)
+    }
+  })
   
-    observeEvent(values$dataLoaded, {
-      req(values$rawData)
-      
+
+  # Reactive values to store data at different stages
+  values <- reactiveValues(
+    rawData = NULL, # original data
+    cleanedData = NULL, # data after missing value handling
+    engineeredData = NULL, # data after feature engineering
+    currentData = NULL, # data after filtering
+    columnTypes = NULL, # column types of the original data
+    dataLoaded = FALSE # whether the data is loaded
+  )
+  
+  observeEvent(values$dataLoaded, {
+    req(values$rawData)
+    if (group() == "B") {
       # === Missing Value Check ===
       missing_summary <- sapply(values$rawData, function(col) any(is.na(col) | col == ""))
       has_missing <- any(missing_summary)
@@ -559,141 +610,124 @@ server <- function(input, output, session) {
       # === Generate dynamic message ===
       message_lines <- c()
       
-      # --- Missing values ---
       if (has_missing) {
         message_lines <- c(
           message_lines,
           paste0("⚠️ Missing values found in: ", paste(head(missing_columns, 5), collapse = ", "), if (length(missing_columns) > 5) " ..."),
-          "👉 Go to 'Data Cleaning' to handle missing values (remove, fill with mean/median, etc.)"
+          "👉 Go to 'Data Cleaning' to handle missing values"
         )
       } else {
-        message_lines <- c(
-          message_lines,
-          "✅ No missing values detected."
-        )
+        message_lines <- c(message_lines, "✅ No missing values detected.")
       }
       
-      # --- Duplicates ---
       if (has_duplicates) {
         message_lines <- c(
           message_lines,
-          "⚠️ Duplicate rows detected in your dataset.",
-          "👉 Consider removing duplicates in 'Data Cleaning&Preprocessing' > 'Duplicate Handling'"
+          "⚠️ Duplicate rows detected.",
+          "👉 Consider removing duplicates in 'Data Cleaning' > 'Duplicate Handling'"
         )
       } else {
-        message_lines <- c(
-          message_lines,
-          "✅ No duplicate rows found."
-        )
+        message_lines <- c(message_lines, "✅ No duplicate rows found.")
       }
       
-      # --- Text columns ---
       if (has_text) {
         message_lines <- c(
           message_lines,
           paste0("📝 Text columns detected: ", paste(head(text_columns, 5), collapse = ", "), if (length(text_columns) > 5) " ..."),
-          "👉 You can apply Text Data Preprocessing (e.g., remove stopwords, lowercase, spell check)"
+          "👉 You can apply Text Preprocessing"
         )
       } else {
-        message_lines <- c(
-          message_lines,
-          "📄 No text columns found. Text preprocessing is not necessary."
-        )
+        message_lines <- c(message_lines, "📄 No text columns found.")
       }
       
-      # === Show Alert ===
       shinyalert(
         title = "AI Assistant Tip 🤖",
         text = paste(message_lines, collapse = "\n\n"),
         type = if (has_missing || has_duplicates) "warning" else "info"
       )
-    })
-    
-  observeEvent(input$sidebar, {
-    if (input$sidebar == "clean") {
-      shinyalert(
-        title = "🧹 Data Cleaning Assistant",
-        text = paste(
-          "📌 Recommended steps for cleaning your data: \n",
-          "- Review missing values and choose appropriate filling/removal strategies.\n",
-          "- Detect and remove duplicate rows to ensure data integrity.\n",
-          "- Explore text preprocessing options if you have textual data.\n"
-        ),
-        type = "info"
-      )
-    } else if (input$sidebar == "feature") {
-      shinyalert(
-        title = "🛠️ Feature Engineering Assistant",
-        text = paste(
-          "📌 Tips for engineering features:\n",
-          "- Use mathematical operations to combine columns.\n",
-          "- Try binning continuous variables to capture non-linear patterns.\n",
-          "- Extract year/month/day from date columns for seasonal analysis.\n"
-        ),
-        type = "info"
-      )
-    } else if (input$sidebar == "eda") {
-      shinyalert(
-        title = "📊 EDA Assistant",
-        text = paste(
-          "📌 Explore your data with: \n",
-          "- Univariate plots to understand distributions.\n",
-          "- Bivariate plots to detect relationships.\n",
-          "- Correlation heatmaps to uncover strong linear links.\n"
-        ),
-        type = "info"
-      )
     }
-  }, ignoreInit = TRUE)
+  })
+  observeEvent(input$sidebar, {
+    if (group() == "B") {
+      if (input$sidebar == "clean") {
+        shinyalert(
+          title = "🧹 Data Cleaning Assistant",
+          text = paste(
+            "📌 Recommended steps for cleaning your data: \n",
+            "- Review missing values and choose appropriate filling/removal strategies.\n",
+            "- Detect and remove duplicate rows to ensure data integrity.\n",
+            "- Explore text preprocessing options if you have textual data.\n"
+          ),
+          type = "info"
+        )
+      } else if (input$sidebar == "feature") {
+        shinyalert(
+          title = "🛠️ Feature Engineering Assistant",
+          text = paste(
+            "📌 Tips for engineering features:\n",
+            "- Use mathematical operations to combine columns.\n",
+            "- Try binning continuous variables to capture non-linear patterns.\n",
+            "- Extract year/month/day from date columns for seasonal analysis.\n"
+          ),
+          type = "info"
+        )
+      } else if (input$sidebar == "eda") {
+        shinyalert(
+          title = "📊 EDA Assistant",
+          text = paste(
+            "📌 Explore your data with: \n",
+            "- Univariate plots to understand distributions.\n",
+            "- Bivariate plots to detect relationships.\n",
+            "- Correlation heatmaps to uncover strong linear links.\n"
+          ),
+          type = "info"
+        )
+      }
+    }}, ignoreInit = TRUE)
   
   observeEvent(input$applyMissing, {
-    shinyalert(
-      title = "✅ Missing Values Treated",
-      text = "Your missing values have been handled. You can now continue with feature engineering or proceed to EDA.",
-      type = "success"
-    )
-  })
+    if (group() == "B") {
+      shinyalert(
+        title = "✅ Missing Values Treated",
+        text = "Your missing values have been handled. You can now continue with feature engineering or proceed to EDA.",
+        type = "success"
+      )
+    }})
   
   observeEvent(input$createFeature, {
-    shinyalert(
-      title = "✅ Feature Created",
-      text = "Your new feature has been created successfully! You can now visualize its distribution or correlations under the EDA tab.",
-      type = "success"
-    )
-  })
+    if (group() == "B") {
+      shinyalert(
+        title = "✅ Feature Created",
+        text = "Your new feature has been created successfully! You can now visualize its distribution or correlations under the EDA tab.",
+        type = "success"
+      )
+    }})
   
   
   observeEvent(input$applyTransform, {
-    col <- input$transformColumn
-    method <- input$transformMethod
-    if (method %in% c("standardize", "normalize", "log", "removeOutliers") &&
-        !is.null(values$cleanedData[[col]]) &&
-        !is.numeric(values$cleanedData[[col]])) {
-      shinyalert(
-        title = "⚠️ Transformation Warning",
-        text = paste0("The selected transformation method (", method, ") is only suitable for numeric columns. Please choose a valid column."),
-        type = "error"
-      )
-    }
-  })
+    if (group() == "B") {
+      col <- input$transformColumn
+      method <- input$transformMethod
+      if (method %in% c("standardize", "normalize", "log", "removeOutliers") &&
+          !is.null(values$cleanedData[[col]]) &&
+          !is.numeric(values$cleanedData[[col]])) {
+        shinyalert(
+          title = "⚠️ Transformation Warning",
+          text = paste0("The selected transformation method (", method, ") is only suitable for numeric columns. Please choose a valid column."),
+          type = "error"
+        )
+      }
+    }})
   
   observeEvent(input$applyTextPreprocess, {
-    shinyalert(
-      title = "📝 NLP Assistant",
-      text = "Text preprocessing (e.g., stopword removal, spelling correction) has been applied. Consider examining the cleaned text for quality.",
-      type = "info"
-    )
-  })
+    if (group() == "B") {
+      shinyalert(
+        title = "📝 NLP Assistant",
+        text = "Text preprocessing (e.g., stopword removal, spelling correction) has been applied. Consider examining the cleaned text for quality.",
+        type = "info"
+      )
+    }})
   
-  # Reactive values to store data at different stages
-  values <- reactiveValues(
-    rawData = NULL, # original data
-    cleanedData = NULL, # data after missing value handling
-    engineeredData = NULL, # data after feature engineering
-    currentData = NULL, # data after filtering
-    columnTypes = NULL, # column types of the original data
-    dataLoaded = FALSE # whether the data is loaded
-  )
   
   table_options <- list(pageLength = 10, scrollX = TRUE)
   # Data loading function
